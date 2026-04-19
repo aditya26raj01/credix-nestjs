@@ -86,11 +86,9 @@ export class AuthService {
   }
 
   async refreshTokens(refreshToken: string, requestMeta?: RequestMeta) {
-    if (!refreshToken) {
-      throw new UnauthorizedException('Missing refresh token.');
-    }
-
-    const refreshTokenHash = this.tokenService.hashRefreshToken(refreshToken);
+    const refreshTokenHash = this.tokenService.hashRefreshToken(
+      this.ensureRefreshTokenInput(refreshToken),
+    );
 
     return this.dataSource.transaction(async (manager) => {
       const refreshTokenRepository = manager.getRepository(RefreshTokenEntity);
@@ -140,11 +138,9 @@ export class AuthService {
   }
 
   async revokeRefreshToken(refreshToken: string) {
-    if (!refreshToken) {
-      throw new UnauthorizedException('Missing refresh token.');
-    }
-
-    const refreshTokenHash = this.tokenService.hashRefreshToken(refreshToken);
+    const refreshTokenHash = this.tokenService.hashRefreshToken(
+      this.ensureRefreshTokenInput(refreshToken),
+    );
     const tokenRecord = await this.refreshTokensRepository.findOne({
       where: { tokenHash: refreshTokenHash },
     });
@@ -182,11 +178,7 @@ export class AuthService {
   }
 
   private async verifyGoogleIdToken(idToken: string): Promise<TokenPayload> {
-    const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
-
-    if (!googleClientId) {
-      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
-    }
+    const googleClientId = this.getGoogleClientId();
 
     const client = this.createGoogleVerifierClient();
 
@@ -287,13 +279,9 @@ export class AuthService {
   }
 
   private createGoogleOAuthClient() {
-    const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+    const googleClientId = this.getGoogleClientId();
     const googleClientSecret = this.configService.get<string>('GOOGLE_CLIENT_SECRET');
     const googleRedirectUri = this.configService.get<string>('GOOGLE_REDIRECT_URI');
-
-    if (!googleClientId) {
-      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
-    }
 
     if (!googleClientSecret) {
       throw new InternalServerErrorException('Missing GOOGLE_CLIENT_SECRET in environment.');
@@ -311,13 +299,17 @@ export class AuthService {
   }
 
   private createGoogleVerifierClient() {
+    return new OAuth2Client(this.getGoogleClientId());
+  }
+
+  private getGoogleClientId() {
     const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
 
     if (!googleClientId) {
       throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
     }
 
-    return new OAuth2Client(googleClientId);
+    return googleClientId;
   }
 
   private getGoogleScopes() {
@@ -383,5 +375,13 @@ export class AuthService {
       avatarUrl: user.avatarUrl,
       role: user.role,
     };
+  }
+
+  private ensureRefreshTokenInput(refreshToken: string) {
+    if (!refreshToken) {
+      throw new UnauthorizedException('Missing refresh token.');
+    }
+
+    return refreshToken;
   }
 }

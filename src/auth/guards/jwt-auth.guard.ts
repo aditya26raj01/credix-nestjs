@@ -22,17 +22,9 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing bearer token.');
     }
 
-    try {
-      const payload = await this.tokenService.verifyAccessToken<AuthenticatedUser>(token);
-      request.user = payload;
-      return true;
-    } catch (error) {
-      if (error instanceof UnauthorizedException) {
-        throw error;
-      }
-
-      throw new UnauthorizedException('Invalid or expired access token.');
-    }
+    const payload = await this.tokenService.verifyAccessToken<AuthenticatedUser>(token);
+    request.user = payload;
+    return true;
   }
 
   private extractBearerToken(request: AuthenticatedRequest): string | undefined {
