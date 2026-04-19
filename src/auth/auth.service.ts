@@ -1,17 +1,18 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { OAuth2Client, TokenPayload } from 'google-auth-library';
-import { createHmac, randomBytes } from 'crypto';
+import { Credentials, OAuth2Client, TokenPayload } from 'google-auth-library';
 import { DataSource, Repository } from 'typeorm';
+import { OAuthConnectionEntity, OAuthProvider } from './oauth-connection.entity';
 import { RefreshTokenEntity } from './refresh-token.entity';
+import { TokenService } from './token.service';
 import { UserEntity, UserRole } from '../user/user.entity';
 
 interface RequestMeta {
@@ -26,17 +27,19 @@ export class AuthService {
     private readonly usersRepository: Repository<UserEntity>,
     @InjectRepository(RefreshTokenEntity)
     private readonly refreshTokensRepository: Repository<RefreshTokenEntity>,
+    @InjectRepository(OAuthConnectionEntity)
+    private readonly oauthConnectionsRepository: Repository<OAuthConnectionEntity>,
     private readonly configService: ConfigService,
-    private readonly jwtService: JwtService,
+    private readonly tokenService: TokenService,
     private readonly dataSource: DataSource,
   ) {}
 
   getGoogleAuthUrl() {
-    const client = this.createGoogleClient();
+    const client = this.createGoogleOAuthClient();
 
     return client.generateAuthUrl({
       access_type: 'offline',
-      scope: ['openid', 'email', 'profile'],
+      scope: this.getGoogleScopes(),
       prompt: 'consent',
       include_granted_scopes: true,
       response_type: 'code',
@@ -48,83 +51,38 @@ export class AuthService {
       throw new BadRequestException('Missing Google authorization code.');
     }
 
-    const client = this.createGoogleClient();
+    const client = this.createGoogleOAuthClient();
     const { tokens } = await client.getToken(code);
 
     if (!tokens.id_token) {
       throw new UnauthorizedException('Google did not return an id_token.');
     }
 
-    const authResult = await this.signInWithGoogle(tokens.id_token, requestMeta);
+    const payload = await this.verifyGoogleIdToken(tokens.id_token);
+    const user = await this.upsertGoogleUser(payload);
+
+    await this.upsertGoogleOAuthConnection(user, payload, tokens);
+
+    const authResult = await this.issueAppSession(user, requestMeta);
 
     return {
-      googleIdToken: tokens.id_token,
       ...authResult,
+      googleIdToken: tokens.id_token,
+      googleConnection: {
+        ...authResult.googleConnection,
+        connected: true,
+        provider: OAuthProvider.GOOGLE,
+        email: payload.email,
+        scope: tokens.scope || this.getGoogleScopes().join(' '),
+      },
     };
   }
 
   async signInWithGoogle(idToken: string, requestMeta?: RequestMeta) {
-    const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+    const payload = await this.verifyGoogleIdToken(idToken);
+    const user = await this.upsertGoogleUser(payload);
 
-    if (!googleClientId) {
-      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
-    }
-
-    let payload: TokenPayload | undefined;
-    const client = this.createGoogleClient();
-
-    try {
-      const ticket = await client.verifyIdToken({
-        idToken,
-        audience: googleClientId,
-      });
-
-      payload = ticket.getPayload();
-    } catch {
-      throw new UnauthorizedException('Invalid Google idToken.');
-    }
-
-    if (!payload || !payload.email) {
-      throw new UnauthorizedException('Google token is missing email claim.');
-    }
-
-    if (!payload.email_verified) {
-      throw new UnauthorizedException('Google email is not verified.');
-    }
-
-    const email = payload.email.toLowerCase().trim();
-    const displayName = payload.name?.trim() || email.split('@')[0];
-    const avatarUrl = payload.picture?.trim() || '';
-
-    let user = await this.usersRepository.findOne({ where: { email } });
-
-    if (!user) {
-      user = this.usersRepository.create({
-        email,
-        displayName,
-        avatarUrl,
-        role: UserRole.USER,
-      });
-    } else {
-      user.displayName = displayName;
-      user.avatarUrl = avatarUrl;
-    }
-
-    const savedUser = await this.usersRepository.save(user);
-
-    const { accessToken, refreshToken } = await this.issueTokenPair(savedUser, requestMeta);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: {
-        id: savedUser.id,
-        email: savedUser.email,
-        displayName: savedUser.displayName,
-        avatarUrl: savedUser.avatarUrl,
-        role: savedUser.role,
-      },
-    };
+    return this.issueAppSession(user, requestMeta);
   }
 
   async refreshTokens(refreshToken: string, requestMeta?: RequestMeta) {
@@ -132,7 +90,7 @@ export class AuthService {
       throw new UnauthorizedException('Missing refresh token.');
     }
 
-    const refreshTokenHash = this.hashRefreshToken(refreshToken);
+    const refreshTokenHash = this.tokenService.hashRefreshToken(refreshToken);
 
     return this.dataSource.transaction(async (manager) => {
       const refreshTokenRepository = manager.getRepository(RefreshTokenEntity);
@@ -176,13 +134,7 @@ export class AuthService {
       return {
         accessToken,
         refreshToken: nextRefreshToken,
-        user: {
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          avatarUrl: user.avatarUrl,
-          role: user.role,
-        },
+        user: this.serializeUser(user),
       };
     });
   }
@@ -192,7 +144,7 @@ export class AuthService {
       throw new UnauthorizedException('Missing refresh token.');
     }
 
-    const refreshTokenHash = this.hashRefreshToken(refreshToken);
+    const refreshTokenHash = this.tokenService.hashRefreshToken(refreshToken);
     const tokenRecord = await this.refreshTokensRepository.findOne({
       where: { tokenHash: refreshTokenHash },
     });
@@ -207,7 +159,134 @@ export class AuthService {
     }
   }
 
-  private createGoogleClient() {
+  private async issueAppSession(user: UserEntity, requestMeta?: RequestMeta) {
+    const { accessToken, refreshToken } = await this.issueTokenPair(user, requestMeta);
+    const googleConnection = await this.oauthConnectionsRepository.findOne({
+      where: {
+        userId: user.id,
+        provider: OAuthProvider.GOOGLE,
+      },
+    });
+
+    return {
+      accessToken,
+      refreshToken,
+      user: this.serializeUser(user),
+      googleConnection: {
+        connected: Boolean(googleConnection && !googleConnection.revokedAt),
+        provider: OAuthProvider.GOOGLE,
+        email: googleConnection?.providerEmail || null,
+        scope: googleConnection?.scope || null,
+      },
+    };
+  }
+
+  private async verifyGoogleIdToken(idToken: string): Promise<TokenPayload> {
+    const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+
+    if (!googleClientId) {
+      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
+    }
+
+    const client = this.createGoogleVerifierClient();
+
+    try {
+      const ticket = await client.verifyIdToken({
+        idToken,
+        audience: googleClientId,
+      });
+      const payload = ticket.getPayload();
+
+      if (!payload || !payload.email) {
+        throw new UnauthorizedException('Google token is missing email claim.');
+      }
+
+      if (!payload.email_verified) {
+        throw new UnauthorizedException('Google email is not verified.');
+      }
+
+      return payload;
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+
+      throw new UnauthorizedException('Invalid Google idToken.');
+    }
+  }
+
+  private async upsertGoogleUser(payload: TokenPayload) {
+    const email = payload.email!.toLowerCase().trim();
+    const displayName = payload.name?.trim() || email.split('@')[0];
+    const avatarUrl = payload.picture?.trim() || '';
+
+    let user = await this.usersRepository.findOne({ where: { email } });
+
+    if (!user) {
+      user = this.usersRepository.create({
+        email,
+        displayName,
+        avatarUrl,
+        role: UserRole.USER,
+      });
+    } else {
+      user.displayName = displayName;
+      user.avatarUrl = avatarUrl;
+    }
+
+    return this.usersRepository.save(user);
+  }
+
+  private async upsertGoogleOAuthConnection(
+    user: UserEntity,
+    payload: TokenPayload,
+    tokens: Credentials,
+  ) {
+    if (!payload.sub || !payload.email) {
+      throw new UnauthorizedException('Google token is missing required account claims.');
+    }
+
+    const existing = await this.oauthConnectionsRepository.findOne({
+      where: {
+        userId: user.id,
+        provider: OAuthProvider.GOOGLE,
+      },
+    });
+
+    const refreshTokenEncrypted = tokens.refresh_token
+      ? this.tokenService.encryptOpaqueToken(tokens.refresh_token)
+      : existing?.refreshTokenEncrypted || null;
+
+    if (!refreshTokenEncrypted) {
+      throw new ConflictException(
+        'Missing Google refresh token. Re-consent with prompt=consent and access_type=offline.',
+      );
+    }
+
+    const connection =
+      existing ||
+      this.oauthConnectionsRepository.create({
+        userId: user.id,
+        provider: OAuthProvider.GOOGLE,
+      });
+
+    connection.providerAccountId = payload.sub;
+    connection.providerEmail = payload.email.toLowerCase().trim();
+    connection.refreshTokenEncrypted = refreshTokenEncrypted;
+    connection.accessTokenEncrypted = tokens.access_token
+      ? this.tokenService.encryptOpaqueToken(tokens.access_token)
+      : existing?.accessTokenEncrypted || null;
+    connection.accessTokenExpiresAt = tokens.expiry_date
+      ? new Date(tokens.expiry_date)
+      : existing?.accessTokenExpiresAt || null;
+    connection.scope = tokens.scope || existing?.scope || this.getGoogleScopes().join(' ');
+    connection.tokenType = tokens.token_type || existing?.tokenType || null;
+    connection.revokedAt = null;
+
+    return this.oauthConnectionsRepository.save(connection);
+  }
+
+  private createGoogleOAuthClient() {
     const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
     const googleClientSecret = this.configService.get<string>('GOOGLE_CLIENT_SECRET');
     const googleRedirectUri = this.configService.get<string>('GOOGLE_REDIRECT_URI');
@@ -231,6 +310,34 @@ export class AuthService {
     });
   }
 
+  private createGoogleVerifierClient() {
+    const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+
+    if (!googleClientId) {
+      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
+    }
+
+    return new OAuth2Client(googleClientId);
+  }
+
+  private getGoogleScopes() {
+    const rawScopes = this.configService.get<string>('GOOGLE_OAUTH_SCOPES');
+
+    if (rawScopes) {
+      return rawScopes
+        .split(',')
+        .map((scope) => scope.trim())
+        .filter(Boolean);
+    }
+
+    return [
+      'openid',
+      'email',
+      'profile',
+      'https://www.googleapis.com/auth/gmail.readonly',
+    ];
+  }
+
   private async issueTokenPair(user: UserEntity, requestMeta?: RequestMeta) {
     return this.issueTokenPairWithManager(user, this.dataSource.manager, requestMeta);
   }
@@ -240,45 +347,15 @@ export class AuthService {
     manager: DataSource['manager'],
     requestMeta?: RequestMeta,
   ) {
-    const accessTokenSecret =
-      this.configService.get<string>('ACCESS_TOKEN_SECRET') ||
-      this.configService.get<string>('JWT_SECRET');
+    const accessToken = await this.tokenService.signAccessToken({
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+    });
 
-    if (!accessTokenSecret) {
-      throw new InternalServerErrorException('Missing ACCESS_TOKEN_SECRET or JWT_SECRET.');
-    }
-
-    const accessTokenExpiresInSeconds = Number(
-      this.configService.get<string>('ACCESS_TOKEN_EXPIRES_IN_SECONDS') || '900',
-    );
-    const refreshTokenExpiresInSeconds = Number(
-      this.configService.get<string>('REFRESH_TOKEN_EXPIRES_IN_SECONDS') || '2592000',
-    );
-
-    const safeAccessTtl =
-      Number.isFinite(accessTokenExpiresInSeconds) && accessTokenExpiresInSeconds > 0
-        ? accessTokenExpiresInSeconds
-        : 900;
-    const safeRefreshTtl =
-      Number.isFinite(refreshTokenExpiresInSeconds) && refreshTokenExpiresInSeconds > 0
-        ? refreshTokenExpiresInSeconds
-        : 2592000;
-
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        email: user.email,
-        role: user.role,
-      },
-      {
-        secret: accessTokenSecret,
-        expiresIn: safeAccessTtl,
-      },
-    );
-
-    const refreshToken = randomBytes(48).toString('base64url');
-    const refreshTokenHash = this.hashRefreshToken(refreshToken);
-    const expiresAt = new Date(Date.now() + safeRefreshTtl * 1000);
+    const refreshToken = this.tokenService.generateRefreshToken();
+    const refreshTokenHash = this.tokenService.hashRefreshToken(refreshToken);
+    const expiresAt = new Date(Date.now() + this.tokenService.getRefreshTokenTtlSeconds() * 1000);
 
     const refreshTokenRepository = manager.getRepository(RefreshTokenEntity);
     const refreshTokenEntity = refreshTokenRepository.create({
@@ -298,15 +375,13 @@ export class AuthService {
     };
   }
 
-  private hashRefreshToken(refreshToken: string): string {
-    const refreshTokenPepper =
-      this.configService.get<string>('REFRESH_TOKEN_PEPPER') ||
-      this.configService.get<string>('JWT_SECRET');
-
-    if (!refreshTokenPepper) {
-      throw new InternalServerErrorException('Missing REFRESH_TOKEN_PEPPER or JWT_SECRET.');
-    }
-
-    return createHmac('sha256', refreshTokenPepper).update(refreshToken).digest('hex');
+  private serializeUser(user: UserEntity) {
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      role: user.role,
+    };
   }
 }

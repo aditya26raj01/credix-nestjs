@@ -2,22 +2,17 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
-  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import type { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import { TokenService } from '../token.service';
 
 type AuthenticatedRequest = Request & { user?: AuthenticatedUser };
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly tokenService: TokenService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -27,19 +22,15 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing bearer token.');
     }
 
-    const accessTokenSecret = this.configService.get<string>('ACCESS_TOKEN_SECRET');
-    const legacyJwtSecret = this.configService.get<string>('JWT_SECRET');
-    const secret = accessTokenSecret || legacyJwtSecret;
-
-    if (!secret) {
-      throw new InternalServerErrorException('Missing ACCESS_TOKEN_SECRET or JWT_SECRET.');
-    }
-
     try {
-      const payload = await this.jwtService.verifyAsync<AuthenticatedUser>(token, { secret });
+      const payload = await this.tokenService.verifyAccessToken<AuthenticatedUser>(token);
       request.user = payload;
       return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+
       throw new UnauthorizedException('Invalid or expired access token.');
     }
   }
