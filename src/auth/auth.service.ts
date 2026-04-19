@@ -3,13 +3,12 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
-  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Credentials, OAuth2Client, TokenPayload } from 'google-auth-library';
 import { DataSource, Repository } from 'typeorm';
+import { AppConfigService } from '../config/app-config.service';
 import { OAuthConnectionEntity, OAuthProvider } from './oauth-connection.entity';
 import { RefreshTokenEntity } from './refresh-token.entity';
 import { TokenService } from './token.service';
@@ -29,7 +28,7 @@ export class AuthService {
     private readonly refreshTokensRepository: Repository<RefreshTokenEntity>,
     @InjectRepository(OAuthConnectionEntity)
     private readonly oauthConnectionsRepository: Repository<OAuthConnectionEntity>,
-    private readonly configService: ConfigService,
+    private readonly appConfigService: AppConfigService,
     private readonly tokenService: TokenService,
     private readonly dataSource: DataSource,
   ) {}
@@ -280,16 +279,8 @@ export class AuthService {
 
   private createGoogleOAuthClient() {
     const googleClientId = this.getGoogleClientId();
-    const googleClientSecret = this.configService.get<string>('GOOGLE_CLIENT_SECRET');
-    const googleRedirectUri = this.configService.get<string>('GOOGLE_REDIRECT_URI');
-
-    if (!googleClientSecret) {
-      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_SECRET in environment.');
-    }
-
-    if (!googleRedirectUri) {
-      throw new InternalServerErrorException('Missing GOOGLE_REDIRECT_URI in environment.');
-    }
+    const googleClientSecret = this.appConfigService.getRequiredString('GOOGLE_CLIENT_SECRET');
+    const googleRedirectUri = this.appConfigService.getRequiredString('GOOGLE_REDIRECT_URI');
 
     return new OAuth2Client({
       clientId: googleClientId,
@@ -303,31 +294,16 @@ export class AuthService {
   }
 
   private getGoogleClientId() {
-    const googleClientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
-
-    if (!googleClientId) {
-      throw new InternalServerErrorException('Missing GOOGLE_CLIENT_ID in environment.');
-    }
-
-    return googleClientId;
+    return this.appConfigService.getRequiredString('GOOGLE_CLIENT_ID');
   }
 
   private getGoogleScopes() {
-    const rawScopes = this.configService.get<string>('GOOGLE_OAUTH_SCOPES');
-
-    if (rawScopes) {
-      return rawScopes
-        .split(',')
-        .map((scope) => scope.trim())
-        .filter(Boolean);
-    }
-
-    return [
+    return this.appConfigService.getStringArray('GOOGLE_OAUTH_SCOPES', [
       'openid',
       'email',
       'profile',
       'https://www.googleapis.com/auth/gmail.readonly',
-    ];
+    ]);
   }
 
   private async issueTokenPair(user: UserEntity, requestMeta?: RequestMeta) {

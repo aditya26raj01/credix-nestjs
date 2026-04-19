@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AppConfigService } from '../config/app-config.service';
 import { UserEntity } from '../user/user.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -14,24 +14,12 @@ import { TokenService } from './token.service';
   imports: [
     TypeOrmModule.forFeature([UserEntity, RefreshTokenEntity, OAuthConnectionEntity]),
     JwtModule.registerAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        const jwtSecret = configService.get<string>('JWT_SECRET');
-        const jwtExpiresInSeconds = Number(
-          configService.get<string>('JWT_EXPIRES_IN_SECONDS') || '604800',
-        );
-
-        if (!jwtSecret) {
-          throw new Error('Missing JWT_SECRET. Add it to .env.local or your environment.');
-        }
-
+      inject: [AppConfigService],
+      useFactory: (appConfigService: AppConfigService) => {
         return {
-          secret: jwtSecret,
+          secret: appConfigService.getRequiredString('JWT_SECRET'),
           signOptions: {
-            expiresIn:
-              Number.isFinite(jwtExpiresInSeconds) && jwtExpiresInSeconds > 0
-                ? jwtExpiresInSeconds
-                : 604800,
+            expiresIn: appConfigService.getPositiveInt('JWT_EXPIRES_IN_SECONDS', 604800),
           },
         };
       },
@@ -39,5 +27,6 @@ import { TokenService } from './token.service';
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtAuthGuard, TokenService],
+  exports: [JwtAuthGuard, TokenService],
 })
 export class AuthModule {}

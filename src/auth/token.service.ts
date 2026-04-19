@@ -1,7 +1,7 @@
 import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { createCipheriv, createHash, createHmac, randomBytes } from 'crypto';
+import { AppConfigService } from '../config/app-config.service';
 
 interface AccessTokenPayload {
   sub: string;
@@ -12,7 +12,7 @@ interface AccessTokenPayload {
 @Injectable()
 export class TokenService {
   constructor(
-    private readonly configService: ConfigService,
+    private readonly appConfigService: AppConfigService,
     private readonly jwtService: JwtService,
   ) {}
 
@@ -34,7 +34,7 @@ export class TokenService {
   }
 
   getRefreshTokenTtlSeconds(): number {
-    return this.getPositiveIntEnv('REFRESH_TOKEN_EXPIRES_IN_SECONDS', 2592000);
+    return this.appConfigService.getPositiveInt('REFRESH_TOKEN_EXPIRES_IN_SECONDS', 2592000);
   }
 
   generateRefreshToken(): string {
@@ -52,11 +52,7 @@ export class TokenService {
   }
 
   encryptOpaqueToken(token: string): string {
-    const rawKey = this.configService.get<string>('OAUTH_TOKEN_ENCRYPTION_KEY');
-
-    if (!rawKey) {
-      throw new InternalServerErrorException('Missing OAUTH_TOKEN_ENCRYPTION_KEY.');
-    }
+    const rawKey = this.appConfigService.getRequiredString('OAUTH_TOKEN_ENCRYPTION_KEY');
 
     const key = createHash('sha256').update(rawKey).digest();
     const iv = randomBytes(12);
@@ -76,23 +72,12 @@ export class TokenService {
   }
 
   private getAccessTokenTtlSeconds(): number {
-    return this.getPositiveIntEnv('ACCESS_TOKEN_EXPIRES_IN_SECONDS', 900);
-  }
-
-  private getPositiveIntEnv(key: string, fallback: number): number {
-    const rawValue = this.configService.get<string>(key);
-    const parsedValue = Number(rawValue ?? String(fallback));
-
-    if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-      return fallback;
-    }
-
-    return parsedValue;
+    return this.appConfigService.getPositiveInt('ACCESS_TOKEN_EXPIRES_IN_SECONDS', 900);
   }
 
   private getPreferredSecret(primaryKey: string, fallbackKey: string, message: string): string {
-    const primarySecret = this.configService.get<string>(primaryKey);
-    const fallbackSecret = this.configService.get<string>(fallbackKey);
+    const primarySecret = this.appConfigService.getString(primaryKey);
+    const fallbackSecret = this.appConfigService.getString(fallbackKey);
     const secret = primarySecret || fallbackSecret;
 
     if (!secret) {
