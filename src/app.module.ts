@@ -7,12 +7,7 @@ import { DatabaseModule } from './database/database.module';
 import { SyncModule } from './sync/sync.module';
 
 @Module({
-  imports: [
-    AppConfigModule,
-    DatabaseModule,
-    AuthModule,
-    SyncModule,
-  ],
+  imports: [AppConfigModule, DatabaseModule, AuthModule, SyncModule],
   controllers: [AppController],
   providers: [AppService],
 })

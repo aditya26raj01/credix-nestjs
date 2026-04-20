@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createCipheriv, createHash, createHmac, randomBytes } from 'crypto';
 import { AppConfigService } from '../config/app-config.service';
@@ -34,7 +38,10 @@ export class TokenService {
   }
 
   getRefreshTokenTtlSeconds(): number {
-    return this.appConfigService.getPositiveInt('REFRESH_TOKEN_EXPIRES_IN_SECONDS', 2592000);
+    return this.appConfigService.getPositiveInt(
+      'REFRESH_TOKEN_EXPIRES_IN_SECONDS',
+      2592000,
+    );
   }
 
   generateRefreshToken(): string {
@@ -48,16 +55,23 @@ export class TokenService {
       'Missing REFRESH_TOKEN_PEPPER or JWT_SECRET.',
     );
 
-    return createHmac('sha256', refreshTokenPepper).update(refreshToken).digest('hex');
+    return createHmac('sha256', refreshTokenPepper)
+      .update(refreshToken)
+      .digest('hex');
   }
 
   encryptOpaqueToken(token: string): string {
-    const rawKey = this.appConfigService.getRequiredString('OAUTH_TOKEN_ENCRYPTION_KEY');
+    const rawKey = this.appConfigService.getRequiredString(
+      'OAUTH_TOKEN_ENCRYPTION_KEY',
+    );
 
     const key = createHash('sha256').update(rawKey).digest();
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
-    const encrypted = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
+    const encrypted = Buffer.concat([
+      cipher.update(token, 'utf8'),
+      cipher.final(),
+    ]);
     const tag = cipher.getAuthTag();
 
     return `${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted.toString('base64url')}`;
@@ -72,10 +86,17 @@ export class TokenService {
   }
 
   private getAccessTokenTtlSeconds(): number {
-    return this.appConfigService.getPositiveInt('ACCESS_TOKEN_EXPIRES_IN_SECONDS', 900);
+    return this.appConfigService.getPositiveInt(
+      'ACCESS_TOKEN_EXPIRES_IN_SECONDS',
+      900,
+    );
   }
 
-  private getPreferredSecret(primaryKey: string, fallbackKey: string, message: string): string {
+  private getPreferredSecret(
+    primaryKey: string,
+    fallbackKey: string,
+    message: string,
+  ): string {
     const primarySecret = this.appConfigService.getString(primaryKey);
     const fallbackSecret = this.appConfigService.getString(fallbackKey);
     const secret = primarySecret || fallbackSecret;

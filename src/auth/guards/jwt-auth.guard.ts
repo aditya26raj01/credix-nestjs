@@ -22,12 +22,15 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing bearer token.');
     }
 
-    const payload = await this.tokenService.verifyAccessToken<AuthenticatedUser>(token);
+    const payload =
+      await this.tokenService.verifyAccessToken<AuthenticatedUser>(token);
     request.user = payload;
     return true;
   }
 
-  private extractBearerToken(request: AuthenticatedRequest): string | undefined {
+  private extractBearerToken(
+    request: AuthenticatedRequest,
+  ): string | undefined {
     const authHeader = request.headers.authorization;
 
     if (!authHeader) {

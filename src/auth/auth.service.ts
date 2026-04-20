@@ -9,7 +9,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Credentials, OAuth2Client, TokenPayload } from 'google-auth-library';
 import { DataSource, Repository } from 'typeorm';
 import { AppConfigService } from '../config/app-config.service';
-import { OAuthConnectionEntity, OAuthProvider } from './oauth-connection.entity';
+import {
+  OAuthConnectionEntity,
+  OAuthProvider,
+} from './oauth-connection.entity';
 import { RefreshTokenEntity } from './refresh-token.entity';
 import { TokenService } from './token.service';
 import { UserEntity, UserRole } from '../user/user.entity';
@@ -96,7 +99,9 @@ export class AuthService {
       const tokenRecord = await refreshTokenRepository
         .createQueryBuilder('refreshToken')
         .setLock('pessimistic_write')
-        .where('refreshToken.tokenHash = :refreshTokenHash', { refreshTokenHash })
+        .where('refreshToken.tokenHash = :refreshTokenHash', {
+          refreshTokenHash,
+        })
         .getOne();
 
       if (!tokenRecord) {
@@ -116,17 +121,16 @@ export class AuthService {
       tokenRecord.revokedAt = new Date();
       await refreshTokenRepository.save(tokenRecord);
 
-      const user = await usersRepository.findOne({ where: { id: tokenRecord.userId } });
+      const user = await usersRepository.findOne({
+        where: { id: tokenRecord.userId },
+      });
 
       if (!user) {
         throw new UnauthorizedException('User not found for refresh token.');
       }
 
-      const { accessToken, refreshToken: nextRefreshToken } = await this.issueTokenPairWithManager(
-        user,
-        manager,
-        requestMeta,
-      );
+      const { accessToken, refreshToken: nextRefreshToken } =
+        await this.issueTokenPairWithManager(user, manager, requestMeta);
 
       return {
         accessToken,
@@ -155,7 +159,10 @@ export class AuthService {
   }
 
   private async issueAppSession(user: UserEntity, requestMeta?: RequestMeta) {
-    const { accessToken, refreshToken } = await this.issueTokenPair(user, requestMeta);
+    const { accessToken, refreshToken } = await this.issueTokenPair(
+      user,
+      requestMeta,
+    );
     const googleConnection = await this.oauthConnectionsRepository.findOne({
       where: {
         userId: user.id,
@@ -208,7 +215,7 @@ export class AuthService {
 
   private async upsertGoogleUser(payload: TokenPayload) {
     const email = payload.email!.toLowerCase().trim();
-    const displayName = payload.name?.trim() || email.split('@')[0];
+    const displayName = payload.name?.trim() || email.split('@')[0] || email;
     const avatarUrl = payload.picture?.trim() || '';
 
     let user = await this.usersRepository.findOne({ where: { email } });
@@ -234,7 +241,9 @@ export class AuthService {
     tokens: Credentials,
   ) {
     if (!payload.sub || !payload.email) {
-      throw new UnauthorizedException('Google token is missing required account claims.');
+      throw new UnauthorizedException(
+        'Google token is missing required account claims.',
+      );
     }
 
     const existing = await this.oauthConnectionsRepository.findOne({
@@ -270,7 +279,8 @@ export class AuthService {
     connection.accessTokenExpiresAt = tokens.expiry_date
       ? new Date(tokens.expiry_date)
       : existing?.accessTokenExpiresAt || null;
-    connection.scope = tokens.scope || existing?.scope || this.getGoogleScopes().join(' ');
+    connection.scope =
+      tokens.scope || existing?.scope || this.getGoogleScopes().join(' ');
     connection.tokenType = tokens.token_type || existing?.tokenType || null;
     connection.revokedAt = null;
 
@@ -279,8 +289,12 @@ export class AuthService {
 
   private createGoogleOAuthClient() {
     const googleClientId = this.getGoogleClientId();
-    const googleClientSecret = this.appConfigService.getRequiredString('GOOGLE_CLIENT_SECRET');
-    const googleRedirectUri = this.appConfigService.getRequiredString('GOOGLE_REDIRECT_URI');
+    const googleClientSecret = this.appConfigService.getRequiredString(
+      'GOOGLE_CLIENT_SECRET',
+    );
+    const googleRedirectUri = this.appConfigService.getRequiredString(
+      'GOOGLE_REDIRECT_URI',
+    );
 
     return new OAuth2Client({
       clientId: googleClientId,
@@ -307,7 +321,11 @@ export class AuthService {
   }
 
   private async issueTokenPair(user: UserEntity, requestMeta?: RequestMeta) {
-    return this.issueTokenPairWithManager(user, this.dataSource.manager, requestMeta);
+    return this.issueTokenPairWithManager(
+      user,
+      this.dataSource.manager,
+      requestMeta,
+    );
   }
 
   private async issueTokenPairWithManager(
@@ -323,7 +341,9 @@ export class AuthService {
 
     const refreshToken = this.tokenService.generateRefreshToken();
     const refreshTokenHash = this.tokenService.hashRefreshToken(refreshToken);
-    const expiresAt = new Date(Date.now() + this.tokenService.getRefreshTokenTtlSeconds() * 1000);
+    const expiresAt = new Date(
+      Date.now() + this.tokenService.getRefreshTokenTtlSeconds() * 1000,
+    );
 
     const refreshTokenRepository = manager.getRepository(RefreshTokenEntity);
     const refreshTokenEntity = refreshTokenRepository.create({

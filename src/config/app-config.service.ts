@@ -9,7 +9,9 @@ export class AppConfigService {
     const value = this.configService.get<string>(key);
 
     if (!value || !value.trim()) {
-      throw new InternalServerErrorException(`Missing required environment variable: ${key}`);
+      throw new InternalServerErrorException(
+        `Missing required environment variable: ${key}`,
+      );
     }
 
     return value.trim();

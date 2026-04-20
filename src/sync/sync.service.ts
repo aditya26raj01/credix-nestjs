@@ -27,7 +27,9 @@ export class SyncService {
     });
 
     if (runningJob) {
-      throw new ConflictException('A sync job is already running for this user.');
+      throw new ConflictException(
+        'A sync job is already running for this user.',
+      );
     }
 
     const lastSuccessfulJob = await this.syncJobsRepository.findOne({
@@ -41,7 +43,8 @@ export class SyncService {
     });
 
     const toDate = new Date();
-    const fromDate = lastSuccessfulJob?.toDate || this.getInitialFromDate(toDate);
+    const fromDate =
+      lastSuccessfulJob?.toDate || this.getInitialFromDate(toDate);
 
     const syncJob = this.syncJobsRepository.create({
       userId,
@@ -77,7 +80,10 @@ export class SyncService {
   }
 
   private getInitialFromDate(now: Date) {
-    const safeLookbackDays = this.appConfigService.getPositiveInt('SYNC_INITIAL_LOOKBACK_DAYS', 30);
+    const safeLookbackDays = this.appConfigService.getPositiveInt(
+      'SYNC_INITIAL_LOOKBACK_DAYS',
+      30,
+    );
 
     return new Date(now.getTime() - safeLookbackDays * 24 * 60 * 60 * 1000);
   }

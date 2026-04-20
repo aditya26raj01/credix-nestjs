@@ -11,7 +11,10 @@ import { AppConfigService } from '../config/app-config.service';
       useFactory: (appConfigService: AppConfigService) => {
         const databaseUrl = appConfigService.getRequiredString('DATABASE_URL');
         const dbSslEnabled = appConfigService.getBoolean('DB_SSL', true);
-        const rejectUnauthorized = appConfigService.getBoolean('DB_SSL_REJECT_UNAUTHORIZED', true);
+        const rejectUnauthorized = appConfigService.getBoolean(
+          'DB_SSL_REJECT_UNAUTHORIZED',
+          true,
+        );
 
         return {
           type: 'postgres' as const,

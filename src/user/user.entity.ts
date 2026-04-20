@@ -27,7 +27,12 @@ export class UserEntity {
   @Column({ type: 'varchar', length: 1024, nullable: false })
   avatarUrl!: string;
 
-  @Column({ type: 'enum', enum: UserRole, nullable: false, default: UserRole.USER })
+  @Column({
+    type: 'enum',
+    enum: UserRole,
+    nullable: false,
+    default: UserRole.USER,
+  })
   role!: UserRole;
 
   @CreateDateColumn({ type: 'timestamptz' })

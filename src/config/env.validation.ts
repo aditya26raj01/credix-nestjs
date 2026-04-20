@@ -27,15 +27,21 @@ const hasAwsCredentialProvider = (env: Record<string, unknown>) => {
     return true;
   }
 
-  const webIdentityTokenFile = String(env.AWS_WEB_IDENTITY_TOKEN_FILE || '').trim();
+  const webIdentityTokenFile = String(
+    env.AWS_WEB_IDENTITY_TOKEN_FILE || '',
+  ).trim();
   const roleArn = String(env.AWS_ROLE_ARN || '').trim();
 
   if (webIdentityTokenFile && roleArn) {
     return true;
   }
 
-  const ecsRelativeUri = String(env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI || '').trim();
-  const ecsFullUri = String(env.AWS_CONTAINER_CREDENTIALS_FULL_URI || '').trim();
+  const ecsRelativeUri = String(
+    env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI || '',
+  ).trim();
+  const ecsFullUri = String(
+    env.AWS_CONTAINER_CREDENTIALS_FULL_URI || '',
+  ).trim();
 
   return Boolean(ecsRelativeUri || ecsFullUri);
 };
@@ -52,7 +58,9 @@ export const validateEnv = (rawEnv: Record<string, unknown>) => {
   }
 
   if (missingKeys.length > 0) {
-    throw new Error(`Missing required environment configuration: ${missingKeys.join(', ')}`);
+    throw new Error(
+      `Missing required environment configuration: ${missingKeys.join(', ')}`,
+    );
   }
 
   return rawEnv;

@@ -1,6 +1,10 @@
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { DataSource } from 'typeorm';
-import { SyncJobEntity, SyncJobStage, SyncJobStatus } from '../../sync/sync-job.entity';
+import {
+  SyncJobEntity,
+  SyncJobStage,
+  SyncJobStatus,
+} from '../../sync/sync-job.entity';
 
 interface SqsRecord {
   messageId: string;
@@ -30,7 +34,9 @@ export const handler = async (event: SqsEvent): Promise<void> => {
   }
 };
 
-const processFetchMessage = async (message: FetchQueueMessage): Promise<void> => {
+const processFetchMessage = async (
+  message: FetchQueueMessage,
+): Promise<void> => {
   const ds = await getDataSource();
 
   await ds.transaction(async (manager) => {
@@ -54,7 +60,10 @@ const processFetchMessage = async (message: FetchQueueMessage): Promise<void> =>
       return;
     }
 
-    if (job.status === SyncJobStatus.SUCCESS || job.status === SyncJobStatus.FAILED) {
+    if (
+      job.status === SyncJobStatus.SUCCESS ||
+      job.status === SyncJobStatus.FAILED
+    ) {
       return;
     }
 
@@ -77,7 +86,9 @@ const processFetchMessage = async (message: FetchQueueMessage): Promise<void> =>
         .getOne();
 
       if (!job) {
-        throw new Error(`SyncJob missing before stage transition. jobId=${message.jobId}`);
+        throw new Error(
+          `SyncJob missing before stage transition. jobId=${message.jobId}`,
+        );
       }
 
       if (job.stage !== SyncJobStage.FETCH) {
@@ -103,7 +114,10 @@ const runFetchStep = async (jobId: string): Promise<void> => {
   void jobId;
 };
 
-const publishExtractStageMessage = async (jobId: string, userId: string): Promise<void> => {
+const publishExtractStageMessage = async (
+  jobId: string,
+  userId: string,
+): Promise<void> => {
   const queueUrl = getRequiredEnv('SYNC_EXTRACT_QUEUE_URL');
 
   await sqsClient.send(
@@ -156,7 +170,10 @@ const getDataSource = async (): Promise<DataSource> => {
   }
 
   const dbSslEnabled = parseBooleanEnv('DB_SSL', true);
-  const dbRejectUnauthorized = parseBooleanEnv('DB_SSL_REJECT_UNAUTHORIZED', true);
+  const dbRejectUnauthorized = parseBooleanEnv(
+    'DB_SSL_REJECT_UNAUTHORIZED',
+    true,
+  );
 
   dataSource = new DataSource({
     type: 'postgres',

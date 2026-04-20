@@ -12,14 +12,21 @@ import { TokenService } from './token.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity, RefreshTokenEntity, OAuthConnectionEntity]),
+    TypeOrmModule.forFeature([
+      UserEntity,
+      RefreshTokenEntity,
+      OAuthConnectionEntity,
+    ]),
     JwtModule.registerAsync({
       inject: [AppConfigService],
       useFactory: (appConfigService: AppConfigService) => {
         return {
           secret: appConfigService.getRequiredString('JWT_SECRET'),
           signOptions: {
-            expiresIn: appConfigService.getPositiveInt('JWT_EXPIRES_IN_SECONDS', 604800),
+            expiresIn: appConfigService.getPositiveInt(
+              'JWT_EXPIRES_IN_SECONDS',
+              604800,
+            ),
           },
         };
       },

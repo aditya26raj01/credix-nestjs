@@ -15,7 +15,8 @@ export class SyncQueueService {
   private readonly queueUrlsByStage: Record<SyncJobStage, string>;
 
   constructor(private readonly appConfigService: AppConfigService) {
-    const region = this.appConfigService.getString('AWS_REGION') || 'ap-south-1';
+    const region =
+      this.appConfigService.getString('AWS_REGION') || 'ap-south-1';
     const fetchQueueUrl =
       this.appConfigService.getString('SYNC_FETCH_QUEUE_URL') ||
       this.appConfigService.getString('SQS_SYNC_FETCH_QUEUE_URL') ||

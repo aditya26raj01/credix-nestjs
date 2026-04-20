@@ -1,5 +1,9 @@
 import { DataSource } from 'typeorm';
-import { SyncJobEntity, SyncJobStage, SyncJobStatus } from '../../sync/sync-job.entity';
+import {
+  SyncJobEntity,
+  SyncJobStage,
+  SyncJobStatus,
+} from '../../sync/sync-job.entity';
 
 interface SqsRecord {
   messageId: string;
@@ -25,7 +29,9 @@ export const handler = async (event: SqsEvent): Promise<void> => {
   }
 };
 
-const processProcessMessage = async (message: ProcessQueueMessage): Promise<void> => {
+const processProcessMessage = async (
+  message: ProcessQueueMessage,
+): Promise<void> => {
   const ds = await getDataSource();
 
   await ds.transaction(async (manager) => {
@@ -49,7 +55,10 @@ const processProcessMessage = async (message: ProcessQueueMessage): Promise<void
       return;
     }
 
-    if (job.status === SyncJobStatus.SUCCESS || job.status === SyncJobStatus.FAILED) {
+    if (
+      job.status === SyncJobStatus.SUCCESS ||
+      job.status === SyncJobStatus.FAILED
+    ) {
       return;
     }
 
@@ -72,7 +81,9 @@ const processProcessMessage = async (message: ProcessQueueMessage): Promise<void
         .getOne();
 
       if (!job) {
-        throw new Error(`SyncJob missing before success transition. jobId=${message.jobId}`);
+        throw new Error(
+          `SyncJob missing before success transition. jobId=${message.jobId}`,
+        );
       }
 
       if (job.stage !== SyncJobStage.PROCESS) {
@@ -118,7 +129,9 @@ const parseMessage = (rawBody: string): ProcessQueueMessage => {
   }
 
   if (parsed.stage !== SyncJobStage.PROCESS) {
-    throw new Error(`Process worker received unsupported stage=${parsed.stage}`);
+    throw new Error(
+      `Process worker received unsupported stage=${parsed.stage}`,
+    );
   }
 
   return {
@@ -134,7 +147,10 @@ const getDataSource = async (): Promise<DataSource> => {
   }
 
   const dbSslEnabled = parseBooleanEnv('DB_SSL', true);
-  const dbRejectUnauthorized = parseBooleanEnv('DB_SSL_REJECT_UNAUTHORIZED', true);
+  const dbRejectUnauthorized = parseBooleanEnv(
+    'DB_SSL_REJECT_UNAUTHORIZED',
+    true,
+  );
 
   dataSource = new DataSource({
     type: 'postgres',
