@@ -9,6 +9,8 @@ import { AppConfigService } from '../config/app-config.service';
 import { SyncJobEntity, SyncJobStage, SyncJobStatus } from './sync-job.entity';
 import { SyncQueueService } from './sync-queue.service';
 
+const MAX_SYNC_WINDOW_DAYS = 2;
+
 @Injectable()
 export class SyncService {
   constructor(
@@ -46,37 +48,95 @@ export class SyncService {
     const fromDate =
       lastSuccessfulJob?.toDate || this.getInitialFromDate(toDate);
 
-    const syncJob = this.syncJobsRepository.create({
-      userId,
-      status: SyncJobStatus.PENDING,
-      stage: SyncJobStage.FETCH,
+    const chunks = this.buildSyncWindows(
       fromDate,
       toDate,
-      lastProcessedAt: null,
-      errorMessage: null,
-    });
+      MAX_SYNC_WINDOW_DAYS,
+    );
+    const jobsToCreate = chunks.map(
+      ({ fromDate: chunkFrom, toDate: chunkTo }) =>
+        this.syncJobsRepository.create({
+          userId,
+          status: SyncJobStatus.PENDING,
+          stage: SyncJobStage.FETCH,
+          fromDate: chunkFrom,
+          toDate: chunkTo,
+          lastProcessedAt: null,
+          errorMessage: null,
+        }),
+    );
 
-    const savedJob = await this.syncJobsRepository.save(syncJob);
+    const savedJobs = await this.syncJobsRepository.save(jobsToCreate);
 
     try {
-      await this.syncQueueService.publishFetchJob(savedJob.id, savedJob.userId);
+      for (const job of savedJobs) {
+        await this.syncQueueService.publishFetchJob(job.id, job.userId);
+      }
     } catch (error) {
-      savedJob.status = SyncJobStatus.FAILED;
-      savedJob.errorMessage = this.formatErrorMessage(error);
-      await this.syncJobsRepository.save(savedJob);
-      throw new ServiceUnavailableException('Failed to enqueue sync job.');
+      const message = this.formatErrorMessage(error);
+
+      for (const job of savedJobs) {
+        if (job.status === SyncJobStatus.SUCCESS) {
+          continue;
+        }
+
+        job.status = SyncJobStatus.FAILED;
+        job.errorMessage = message;
+      }
+
+      await this.syncJobsRepository.save(savedJobs);
+      throw new ServiceUnavailableException(
+        'Failed to enqueue one or more sync jobs.',
+      );
     }
 
     return {
-      id: savedJob.id,
-      userId: savedJob.userId,
-      status: savedJob.status,
-      stage: savedJob.stage,
-      fromDate: savedJob.fromDate,
-      toDate: savedJob.toDate,
-      createdAt: savedJob.createdAt,
-      updatedAt: savedJob.updatedAt,
+      userId,
+      requestedFromDate: fromDate,
+      requestedToDate: toDate,
+      chunkSizeDays: MAX_SYNC_WINDOW_DAYS,
+      totalJobs: savedJobs.length,
+      jobs: savedJobs.map((job) => ({
+        id: job.id,
+        status: job.status,
+        stage: job.stage,
+        fromDate: job.fromDate,
+        toDate: job.toDate,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      })),
     };
+  }
+
+  private buildSyncWindows(
+    fromDate: Date,
+    toDate: Date,
+    maxWindowDays: number,
+  ) {
+    const windows: Array<{ fromDate: Date; toDate: Date }> = [];
+    const maxWindowMs = maxWindowDays * 24 * 60 * 60 * 1000;
+
+    let cursor = new Date(fromDate);
+
+    while (cursor < toDate) {
+      const nextEnd = new Date(
+        Math.min(cursor.getTime() + maxWindowMs, toDate.getTime()),
+      );
+      windows.push({
+        fromDate: new Date(cursor),
+        toDate: nextEnd,
+      });
+      cursor = nextEnd;
+    }
+
+    if (windows.length === 0) {
+      windows.push({
+        fromDate,
+        toDate,
+      });
+    }
+
+    return windows;
   }
 
   private getInitialFromDate(now: Date) {

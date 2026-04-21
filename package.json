@@ -26,6 +26,7 @@
     "commitlint": "commitlint --from=HEAD~1 --to=HEAD"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1033.0",
     "@aws-sdk/client-sqs": "^3.1032.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
