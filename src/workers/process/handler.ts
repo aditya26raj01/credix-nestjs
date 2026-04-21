@@ -90,6 +90,7 @@ const processProcessMessage = async (
         return;
       }
 
+      job.stage = SyncJobStage.COMPLETED;
       job.status = SyncJobStatus.SUCCESS;
       job.lastProcessedAt = new Date();
       job.errorMessage = null;

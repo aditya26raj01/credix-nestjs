@@ -12,7 +12,7 @@ interface PublishStageJobInput {
 @Injectable()
 export class SyncQueueService {
   private readonly sqsClient: SQSClient;
-  private readonly queueUrlsByStage: Record<SyncJobStage, string>;
+  private readonly queueUrlsByStage: Partial<Record<SyncJobStage, string>>;
 
   constructor(private readonly appConfigService: AppConfigService) {
     const region =

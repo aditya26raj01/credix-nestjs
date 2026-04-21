@@ -4,7 +4,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AppConfigService } from '../config/app-config.service';
 import { SyncJobEntity, SyncJobStage, SyncJobStatus } from './sync-job.entity';
 import { SyncQueueService } from './sync-queue.service';
@@ -21,16 +21,19 @@ export class SyncService {
   ) {}
 
   async startSync(userId: string) {
-    const runningJob = await this.syncJobsRepository.findOne({
+    const activeJob = await this.syncJobsRepository.findOne({
       where: {
         userId,
-        status: SyncJobStatus.RUNNING,
+        status: In([SyncJobStatus.PENDING, SyncJobStatus.RUNNING]),
+      },
+      order: {
+        createdAt: 'DESC',
       },
     });
 
-    if (runningJob) {
+    if (activeJob) {
       throw new ConflictException(
-        'A sync job is already running for this user.',
+        'A sync job is already in progress for this user.',
       );
     }
 
