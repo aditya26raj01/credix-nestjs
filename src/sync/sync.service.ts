@@ -10,6 +10,7 @@ import { SyncJobEntity, SyncJobStage, SyncJobStatus } from './sync-job.entity';
 import { SyncQueueService } from './sync-queue.service';
 
 const MAX_SYNC_WINDOW_DAYS = 2;
+const DEFAULT_MIN_SYNC_WINDOW_HOURS = 6;
 
 @Injectable()
 export class SyncService {
@@ -48,6 +49,10 @@ export class SyncService {
     });
 
     const toDate = new Date();
+    if (lastSuccessfulJob?.toDate) {
+      this.assertMinSyncInterval(lastSuccessfulJob.toDate, toDate);
+    }
+
     const fromDate =
       lastSuccessfulJob?.toDate || this.getInitialFromDate(toDate);
 
@@ -149,6 +154,30 @@ export class SyncService {
     );
 
     return new Date(now.getTime() - safeLookbackDays * 24 * 60 * 60 * 1000);
+  }
+
+  private getMinSyncWindowHours() {
+    return this.appConfigService.getPositiveInt(
+      'SYNC_MIN_WINDOW_HOURS',
+      DEFAULT_MIN_SYNC_WINDOW_HOURS,
+    );
+  }
+
+  private assertMinSyncInterval(lastSyncToDate: Date, now: Date) {
+    const minWindowHours = this.getMinSyncWindowHours();
+    const minWindowMs = minWindowHours * 60 * 60 * 1000;
+    const elapsedMs = now.getTime() - lastSyncToDate.getTime();
+
+    if (elapsedMs >= minWindowMs) {
+      return;
+    }
+
+    const remainingMs = minWindowMs - elapsedMs;
+    const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+
+    throw new ConflictException(
+      `Sync can run only once every ${minWindowHours} hours. Try again in about ${remainingMinutes} minute(s).`,
+    );
   }
 
   private formatErrorMessage(error: unknown) {

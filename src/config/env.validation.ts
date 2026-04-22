@@ -22,6 +22,7 @@ const REQUIRED_ENV_KEYS = [
   'SYNC_RAW_BUCKET_NAME',
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
+  'SYNC_MIN_WINDOW_HOURS',
 ] as const;
 
 export const validateEnv = (rawEnv: Record<string, unknown>) => {
