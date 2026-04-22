@@ -18,7 +18,7 @@ export enum SyncJobStage {
   FETCH = 'FETCH',
   EXTRACT = 'EXTRACT',
   PROCESS = 'PROCESS',
-  COMPLETED = 'COMPLETED',
+  COMPLETE = 'COMPLETE',
 }
 
 @Index('UQ_sync_jobs_user_running', ['userId'], {

@@ -2,7 +2,8 @@ import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { OAuth2Client } from 'google-auth-library';
 import { createDecipheriv, createHash } from 'crypto';
-import { DataSource } from 'typeorm';
+import { DataSource, In } from 'typeorm';
+import { EmailJobEntity, EmailJobStatus } from '../../sync/email-job.entity';
 import {
   OAuthConnectionEntity,
   OAuthProvider,
@@ -13,6 +14,7 @@ import {
   SyncJobStatus,
 } from '../../sync/sync-job.entity';
 import { UserEntity } from '../../user/user.entity';
+import pLimit from 'p-limit';
 
 interface SqsRecord {
   messageId: string;
@@ -83,6 +85,12 @@ interface RawEmailRecord {
   bodyHtml: string | null;
   hasPdfAttachment: boolean;
   pdfAttachmentFilename: string | null;
+}
+
+interface EmailJobSeed {
+  emailId: string;
+  s3RawKey: string;
+  s3AttachmentKey: string | null;
 }
 
 const CARD_KEYWORD_REGEX =
@@ -179,7 +187,7 @@ const processFetchMessage = async (
 
   try {
     console.info(`[fetch-worker] runFetchStep start jobId=${message.jobId}`);
-    await runFetchStep(message.jobId, message.userId);
+    const emailJobSeeds = await runFetchStep(message.jobId, message.userId);
     console.info(`[fetch-worker] runFetchStep complete jobId=${message.jobId}`);
 
     await ds.transaction(async (manager) => {
@@ -213,11 +221,25 @@ const processFetchMessage = async (
     });
 
     console.info(
-      `[fetch-worker] publishing extract message jobId=${message.jobId} userId=${message.userId}`,
+      `[fetch-worker] creating email jobs jobId=${message.jobId} count=${emailJobSeeds.length}`,
     );
-    await publishExtractStageMessage(message.jobId, message.userId);
+    const emailJobs = await createOrUpdateEmailJobs(
+      message.jobId,
+      message.userId,
+      emailJobSeeds,
+    );
+
     console.info(
-      `[fetch-worker] published extract message jobId=${message.jobId} userId=${message.userId}`,
+      `[fetch-worker] publishing extract messages for email jobs syncJobId=${message.jobId} count=${emailJobs.length}`,
+    );
+    await Promise.all(
+      emailJobs.map((emailJob) =>
+        publishExtractStageMessage(emailJob.id, message.userId),
+      ),
+    );
+
+    console.info(
+      `[fetch-worker] published extract messages for email jobs syncJobId=${message.jobId} count=${emailJobs.length}`,
     );
   } catch (error) {
     console.error(
@@ -228,7 +250,10 @@ const processFetchMessage = async (
   }
 };
 
-const runFetchStep = async (jobId: string, userId: string): Promise<void> => {
+const runFetchStep = async (
+  jobId: string,
+  userId: string,
+): Promise<EmailJobSeed[]> => {
   console.info(
     `[fetch-worker] runFetchStep init jobId=${jobId} userId=${userId}`,
   );
@@ -284,38 +309,79 @@ const runFetchStep = async (jobId: string, userId: string): Promise<void> => {
     `[fetch-worker] fetched gmail messages count=${gmailMessages.length} jobId=${jobId}`,
   );
   const rawEmailRecords: RawEmailRecord[] = [];
+  const emailJobSeeds: EmailJobSeed[] = [];
   let filteredOutCount = 0;
+  const rawEmailsKey = buildRawEmailsJsonKey(userId, jobId);
 
-  for (const gmailMessage of gmailMessages) {
-    const pdfAttachment = await getFirstPdfAttachment(
-      accessToken,
-      gmailMessage,
-    );
+  const limit = pLimit(5);
 
-    const isStatementCandidate = isLikelyCreditCardStatementEmail(
-      gmailMessage,
-      pdfAttachment?.filename || null,
-    );
+  const results = await Promise.all(
+    gmailMessages.map((gmailMessage) =>
+      limit(async () => {
+        try {
+          const pdfAttachment = await getFirstPdfAttachment(
+            accessToken,
+            gmailMessage,
+          );
 
-    if (!isStatementCandidate) {
-      filteredOutCount += 1;
+          const isStatementCandidate = isLikelyCreditCardStatementEmail(
+            gmailMessage,
+            pdfAttachment?.filename || null,
+          );
+
+          if (!isStatementCandidate) {
+            return { filtered: true };
+          }
+
+          let s3AttachmentKey: string | null = null;
+
+          if (pdfAttachment) {
+            s3AttachmentKey = buildRawAttachmentKey(
+              userId,
+              jobId,
+              gmailMessage.id,
+            );
+
+            await uploadBytesToS3(
+              s3AttachmentKey,
+              pdfAttachment.bytes,
+              'application/pdf',
+            );
+          }
+
+          return {
+            filtered: false,
+            rawRecord: serializeRawEmailRecord(
+              gmailMessage,
+              pdfAttachment?.filename || null,
+            ),
+            seed: {
+              emailId: gmailMessage.id,
+              s3RawKey: rawEmailsKey,
+              s3AttachmentKey,
+            },
+          };
+        } catch (error) {
+          console.error(
+            `[fetch-worker] email processing failed emailId=${gmailMessage.id} error=${formatError(error)}`,
+          );
+          return { filtered: true };
+        }
+      }),
+    ),
+  );
+
+  for (const res of results) {
+    if (res.filtered) {
+      filteredOutCount++;
+      continue;
+    }
+    if (!res.rawRecord || !res.seed) {
       continue;
     }
 
-    if (pdfAttachment) {
-      await uploadBytesToS3(
-        buildRawAttachmentKey(userId, jobId, gmailMessage.id),
-        pdfAttachment.bytes,
-        'application/pdf',
-      );
-      console.info(
-        `[fetch-worker] uploaded pdf attachment jobId=${jobId} emailId=${gmailMessage.id} filename=${pdfAttachment.filename}`,
-      );
-    }
-
-    rawEmailRecords.push(
-      serializeRawEmailRecord(gmailMessage, pdfAttachment?.filename || null),
-    );
+    rawEmailRecords.push(res.rawRecord);
+    emailJobSeeds.push(res.seed);
   }
 
   const rawPayload = {
@@ -329,7 +395,7 @@ const runFetchStep = async (jobId: string, userId: string): Promise<void> => {
   };
 
   await uploadTextToS3(
-    buildRawEmailsJsonKey(userId, jobId),
+    rawEmailsKey,
     JSON.stringify(rawPayload, null, 2),
     'application/json',
   );
@@ -339,6 +405,74 @@ const runFetchStep = async (jobId: string, userId: string): Promise<void> => {
   console.info(
     `[fetch-worker] statement filter summary jobId=${jobId} kept=${rawEmailRecords.length} filteredOut=${filteredOutCount}`,
   );
+
+  return emailJobSeeds;
+};
+
+const createOrUpdateEmailJobs = async (
+  syncJobId: string,
+  userId: string,
+  seeds: EmailJobSeed[],
+): Promise<EmailJobEntity[]> => {
+  const ds = await getDataSource();
+  const repo = ds.getRepository(EmailJobEntity);
+
+  if (!seeds.length) return [];
+
+  const existingJobs = await repo.find({
+    where: {
+      syncJobId,
+      emailId: In(seeds.map((s) => s.emailId)),
+    },
+  });
+
+  // 2. Map for quick lookup
+  const existingMap = new Map(existingJobs.map((job) => [job.emailId, job]));
+
+  const toSave: EmailJobEntity[] = [];
+  const queueTargets: EmailJobEntity[] = [];
+
+  for (const seed of seeds) {
+    const existing = existingMap.get(seed.emailId);
+
+    if (!existing) {
+      const newJob = repo.create({
+        syncJobId,
+        userId,
+        emailId: seed.emailId,
+        status: EmailJobStatus.PENDING,
+        s3RawKey: seed.s3RawKey,
+        s3AttachmentKey: seed.s3AttachmentKey,
+        errorMessage: null,
+      });
+
+      toSave.push(newJob);
+      continue;
+    }
+
+    if (existing.status === EmailJobStatus.SUCCESS) {
+      continue;
+    }
+
+    existing.status = EmailJobStatus.PENDING;
+    existing.errorMessage = null;
+    existing.s3RawKey = seed.s3RawKey;
+    existing.s3AttachmentKey = seed.s3AttachmentKey;
+
+    toSave.push(existing);
+  }
+
+  if (!toSave.length) return [];
+
+  const savedJobs = await repo.save(toSave);
+
+  for (const job of savedJobs) {
+    if (job.status === EmailJobStatus.PENDING) {
+      queueTargets.push(job);
+    }
+  }
+
+  return queueTargets;
 };
 
 const fetchGmailMessages = async (
@@ -366,16 +500,20 @@ const fetchGmailMessages = async (
   } while (nextPageToken);
 
   const uniqueReferences = dedupeMessageReferences(references);
-  const messages: GmailMessage[] = [];
 
-  for (const reference of uniqueReferences) {
-    const message = await gmailApiRequest<GmailMessage>(
-      `/gmail/v1/users/me/messages/${encodeURIComponent(reference.id)}`,
-      accessToken,
-      { format: 'full' },
-    );
-    messages.push(message);
-  }
+  const limit = pLimit(5);
+
+  const messages = await Promise.all(
+    uniqueReferences.map((reference) =>
+      limit(() =>
+        gmailApiRequest<GmailMessage>(
+          `/gmail/v1/users/me/messages/${encodeURIComponent(reference.id)}`,
+          accessToken,
+          { format: 'full' },
+        ),
+      ),
+    ),
+  );
 
   return messages;
 };
@@ -724,7 +862,7 @@ const decodeBase64UrlToUtf8 = (value: string): string => {
 };
 
 const publishExtractStageMessage = async (
-  jobId: string,
+  emailJobId: string,
   userId: string,
 ): Promise<void> => {
   const queueUrl = getRequiredEnv('SYNC_EXTRACT_QUEUE_URL');
@@ -733,14 +871,14 @@ const publishExtractStageMessage = async (
     new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: JSON.stringify({
-        jobId,
+        jobId: emailJobId,
         userId,
         stage: SyncJobStage.EXTRACT,
       }),
     }),
   );
   console.info(
-    `[fetch-worker] sent extract queue message jobId=${jobId} userId=${userId}`,
+    `[fetch-worker] sent extract queue message emailJobId=${emailJobId} userId=${userId}`,
   );
 };
 
@@ -793,7 +931,12 @@ const getDataSource = async (): Promise<DataSource> => {
   dataSource = new DataSource({
     type: 'postgres',
     url: getRequiredEnv('DATABASE_URL'),
-    entities: [SyncJobEntity, OAuthConnectionEntity, UserEntity],
+    entities: [
+      SyncJobEntity,
+      EmailJobEntity,
+      OAuthConnectionEntity,
+      UserEntity,
+    ],
     synchronize: false,
     ssl: dbSslEnabled ? { rejectUnauthorized: dbRejectUnauthorized } : false,
   });
