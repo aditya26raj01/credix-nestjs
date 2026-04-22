@@ -24,14 +24,34 @@ let dataSource: DataSource | null = null;
 
 export const handler = async (event: SqsEvent): Promise<void> => {
   for (const record of event.Records) {
+    console.info(
+      `[process-worker] received record messageId=${record.messageId}`,
+    );
     const message = parseMessage(record.body);
-    await processProcessMessage(message);
+    console.info(
+      `[process-worker] parsed message jobId=${message.jobId} userId=${message.userId} stage=${message.stage}`,
+    );
+
+    try {
+      await processProcessMessage(message);
+      console.info(
+        `[process-worker] completed message jobId=${message.jobId} userId=${message.userId}`,
+      );
+    } catch (error) {
+      console.error(
+        `[process-worker] failed message jobId=${message.jobId} userId=${message.userId} error=${formatError(error)}`,
+      );
+      throw error;
+    }
   }
 };
 
 const processProcessMessage = async (
   message: ProcessQueueMessage,
 ): Promise<void> => {
+  console.info(
+    `[process-worker] processProcessMessage start jobId=${message.jobId} userId=${message.userId}`,
+  );
   const ds = await getDataSource();
 
   await ds.transaction(async (manager) => {
@@ -52,6 +72,9 @@ const processProcessMessage = async (
     }
 
     if (job.stage !== SyncJobStage.PROCESS) {
+      console.info(
+        `[process-worker] skipping jobId=${message.jobId} because stage=${job.stage}`,
+      );
       return;
     }
 
@@ -59,6 +82,9 @@ const processProcessMessage = async (
       job.status === SyncJobStatus.SUCCESS ||
       job.status === SyncJobStatus.FAILED
     ) {
+      console.info(
+        `[process-worker] skipping jobId=${message.jobId} because status=${job.status}`,
+      );
       return;
     }
 
@@ -66,11 +92,20 @@ const processProcessMessage = async (
       job.status = SyncJobStatus.RUNNING;
       job.errorMessage = null;
       await repo.save(job);
+      console.info(
+        `[process-worker] marked RUNNING jobId=${message.jobId} stage=${job.stage}`,
+      );
     }
   });
 
   try {
+    console.info(
+      `[process-worker] runProcessStep start jobId=${message.jobId}`,
+    );
     await runProcessStep(message.jobId);
+    console.info(
+      `[process-worker] runProcessStep complete jobId=${message.jobId}`,
+    );
 
     await ds.transaction(async (manager) => {
       const repo = manager.getRepository(SyncJobEntity);
@@ -87,6 +122,9 @@ const processProcessMessage = async (
       }
 
       if (job.stage !== SyncJobStage.PROCESS) {
+        console.info(
+          `[process-worker] skip completion for jobId=${message.jobId} because stage=${job.stage}`,
+        );
         return;
       }
 
@@ -95,8 +133,14 @@ const processProcessMessage = async (
       job.lastProcessedAt = new Date();
       job.errorMessage = null;
       await repo.save(job);
+      console.info(
+        `[process-worker] marked SUCCESS jobId=${message.jobId} stage=${job.stage}`,
+      );
     });
   } catch (error) {
+    console.error(
+      `[process-worker] processProcessMessage error jobId=${message.jobId} userId=${message.userId} error=${formatError(error)}`,
+    );
     await markJobFailed(message.jobId, error);
     throw error;
   }
@@ -120,6 +164,9 @@ const markJobFailed = async (jobId: string, error: unknown): Promise<void> => {
   job.status = SyncJobStatus.FAILED;
   job.errorMessage = formatError(error);
   await repo.save(job);
+  console.error(
+    `[process-worker] marked job FAILED jobId=${jobId} error=${job.errorMessage}`,
+  );
 };
 
 const parseMessage = (rawBody: string): ProcessQueueMessage => {

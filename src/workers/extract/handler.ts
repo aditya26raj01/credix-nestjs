@@ -29,14 +29,34 @@ let dataSource: DataSource | null = null;
 
 export const handler = async (event: SqsEvent): Promise<void> => {
   for (const record of event.Records) {
+    console.info(
+      `[extract-worker] received record messageId=${record.messageId}`,
+    );
     const message = parseMessage(record.body);
-    await processExtractMessage(message);
+    console.info(
+      `[extract-worker] parsed message jobId=${message.jobId} userId=${message.userId} stage=${message.stage}`,
+    );
+
+    try {
+      await processExtractMessage(message);
+      console.info(
+        `[extract-worker] completed message jobId=${message.jobId} userId=${message.userId}`,
+      );
+    } catch (error) {
+      console.error(
+        `[extract-worker] failed message jobId=${message.jobId} userId=${message.userId} error=${formatError(error)}`,
+      );
+      throw error;
+    }
   }
 };
 
 const processExtractMessage = async (
   message: ExtractQueueMessage,
 ): Promise<void> => {
+  console.info(
+    `[extract-worker] processExtractMessage start jobId=${message.jobId} userId=${message.userId}`,
+  );
   const ds = await getDataSource();
 
   await ds.transaction(async (manager) => {
@@ -57,6 +77,9 @@ const processExtractMessage = async (
     }
 
     if (job.stage !== SyncJobStage.EXTRACT) {
+      console.info(
+        `[extract-worker] skipping jobId=${message.jobId} because stage=${job.stage}`,
+      );
       return;
     }
 
@@ -64,6 +87,9 @@ const processExtractMessage = async (
       job.status === SyncJobStatus.SUCCESS ||
       job.status === SyncJobStatus.FAILED
     ) {
+      console.info(
+        `[extract-worker] skipping jobId=${message.jobId} because status=${job.status}`,
+      );
       return;
     }
 
@@ -71,11 +97,20 @@ const processExtractMessage = async (
       job.status = SyncJobStatus.RUNNING;
       job.errorMessage = null;
       await repo.save(job);
+      console.info(
+        `[extract-worker] marked RUNNING jobId=${message.jobId} stage=${job.stage}`,
+      );
     }
   });
 
   try {
+    console.info(
+      `[extract-worker] runExtractStep start jobId=${message.jobId}`,
+    );
     await runExtractStep(message.jobId);
+    console.info(
+      `[extract-worker] runExtractStep complete jobId=${message.jobId}`,
+    );
 
     await ds.transaction(async (manager) => {
       const repo = manager.getRepository(SyncJobEntity);
@@ -92,6 +127,9 @@ const processExtractMessage = async (
       }
 
       if (job.stage !== SyncJobStage.EXTRACT) {
+        console.info(
+          `[extract-worker] skip stage transition for jobId=${message.jobId} because stage=${job.stage}`,
+        );
         return;
       }
 
@@ -99,10 +137,22 @@ const processExtractMessage = async (
       job.status = SyncJobStatus.RUNNING;
       job.lastProcessedAt = new Date();
       await repo.save(job);
+      console.info(
+        `[extract-worker] advanced jobId=${message.jobId} to stage=${job.stage}`,
+      );
     });
 
+    console.info(
+      `[extract-worker] publishing process message jobId=${message.jobId} userId=${message.userId}`,
+    );
     await publishProcessStageMessage(message.jobId, message.userId);
+    console.info(
+      `[extract-worker] published process message jobId=${message.jobId} userId=${message.userId}`,
+    );
   } catch (error) {
+    console.error(
+      `[extract-worker] processExtractMessage error jobId=${message.jobId} userId=${message.userId} error=${formatError(error)}`,
+    );
     await markJobFailed(message.jobId, error);
     throw error;
   }
@@ -130,6 +180,9 @@ const publishProcessStageMessage = async (
       }),
     }),
   );
+  console.info(
+    `[extract-worker] sent process queue message jobId=${jobId} userId=${userId}`,
+  );
 };
 
 const markJobFailed = async (jobId: string, error: unknown): Promise<void> => {
@@ -144,6 +197,9 @@ const markJobFailed = async (jobId: string, error: unknown): Promise<void> => {
   job.status = SyncJobStatus.FAILED;
   job.errorMessage = formatError(error);
   await repo.save(job);
+  console.error(
+    `[extract-worker] marked job FAILED jobId=${jobId} error=${job.errorMessage}`,
+  );
 };
 
 const parseMessage = (rawBody: string): ExtractQueueMessage => {
