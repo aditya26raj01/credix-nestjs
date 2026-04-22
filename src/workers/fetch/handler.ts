@@ -79,9 +79,17 @@ interface RawEmailRecord {
   from: string | null;
   to: string | null;
   subject: string | null;
+  bodyText: string | null;
+  bodyHtml: string | null;
   hasPdfAttachment: boolean;
   pdfAttachmentFilename: string | null;
 }
+
+const CARD_KEYWORD_REGEX =
+  /\b(credit\s*card|card\s*statement|visa|mastercard|master\s*card|amex|american\s*express|rupay)\b/i;
+const STATEMENT_KEYWORD_REGEX =
+  /\b(statement|e-?statement|bill|billing|minimum\s+due|total\s+due|payment\s+due)\b/i;
+const ATTACHMENT_NAME_HINT_REGEX = /\b(statement|stmt|bill|card)\b/i;
 
 const sqsClient = new SQSClient({
   region: getRequiredEnv('AWS_REGION'),
@@ -276,12 +284,23 @@ const runFetchStep = async (jobId: string, userId: string): Promise<void> => {
     `[fetch-worker] fetched gmail messages count=${gmailMessages.length} jobId=${jobId}`,
   );
   const rawEmailRecords: RawEmailRecord[] = [];
+  let filteredOutCount = 0;
 
   for (const gmailMessage of gmailMessages) {
     const pdfAttachment = await getFirstPdfAttachment(
       accessToken,
       gmailMessage,
     );
+
+    const isStatementCandidate = isLikelyCreditCardStatementEmail(
+      gmailMessage,
+      pdfAttachment?.filename || null,
+    );
+
+    if (!isStatementCandidate) {
+      filteredOutCount += 1;
+      continue;
+    }
 
     if (pdfAttachment) {
       await uploadBytesToS3(
@@ -316,6 +335,9 @@ const runFetchStep = async (jobId: string, userId: string): Promise<void> => {
   );
   console.info(
     `[fetch-worker] uploaded raw emails payload jobId=${jobId} count=${rawEmailRecords.length}`,
+  );
+  console.info(
+    `[fetch-worker] statement filter summary jobId=${jobId} kept=${rawEmailRecords.length} filteredOut=${filteredOutCount}`,
   );
 };
 
@@ -459,6 +481,7 @@ const serializeRawEmailRecord = (
   pdfAttachmentFilename: string | null,
 ): RawEmailRecord => {
   const headers = getMessageHeaders(message.payload);
+  const content = extractEmailContent(message.payload);
 
   return {
     id: message.id,
@@ -471,6 +494,8 @@ const serializeRawEmailRecord = (
     from: headers.from || null,
     to: headers.to || null,
     subject: headers.subject || null,
+    bodyText: content.text,
+    bodyHtml: content.html,
     hasPdfAttachment: Boolean(pdfAttachmentFilename),
     pdfAttachmentFilename,
   };
@@ -526,7 +551,67 @@ const findFirstPdfPart = (part: GmailMessagePart): GmailMessagePart | null => {
 const buildGmailDateRangeQuery = (fromDate: Date, toDate: Date): string => {
   const after = Math.floor(fromDate.getTime() / 1000);
   const before = Math.floor(toDate.getTime() / 1000);
-  return `after:${after} before:${before}`;
+  return `in:inbox has:attachment filename:pdf (subject:(statement OR bill OR "e-statement" OR estatement) OR "credit card statement" OR "card statement" OR "minimum due" OR "total due" OR "payment due") after:${after} before:${before}`;
+};
+
+const extractEmailContent = (
+  payload?: GmailMessagePart,
+): { text: string | null; html: string | null } => {
+  if (!payload) {
+    return { text: null, html: null };
+  }
+
+  const textParts: string[] = [];
+  const htmlParts: string[] = [];
+
+  const walk = (part: GmailMessagePart) => {
+    const mimeType = (part.mimeType || '').toLowerCase();
+    const data = part.body?.data;
+
+    if (data) {
+      const decoded = decodeBase64UrlToUtf8(data);
+
+      if (mimeType === 'text/plain') {
+        textParts.push(decoded);
+      }
+
+      if (mimeType === 'text/html') {
+        htmlParts.push(decoded);
+      }
+    }
+
+    for (const child of part.parts || []) {
+      walk(child);
+    }
+  };
+
+  walk(payload);
+
+  return {
+    text: textParts.length > 0 ? textParts.join('\n') : null,
+    html: htmlParts.length > 0 ? htmlParts.join('\n') : null,
+  };
+};
+
+const isLikelyCreditCardStatementEmail = (
+  message: GmailMessage,
+  pdfAttachmentFilename: string | null,
+): boolean => {
+  const headers = getMessageHeaders(message.payload);
+  const searchableText = [
+    headers.subject || '',
+    headers.from || '',
+    message.snippet || '',
+    pdfAttachmentFilename || '',
+  ].join(' ');
+
+  const hasCardKeyword = CARD_KEYWORD_REGEX.test(searchableText);
+  const hasStatementKeyword = STATEMENT_KEYWORD_REGEX.test(searchableText);
+  const hasAttachmentHint =
+    Boolean(pdfAttachmentFilename) &&
+    ATTACHMENT_NAME_HINT_REGEX.test(pdfAttachmentFilename || '');
+
+  return (hasCardKeyword && hasStatementKeyword) || hasAttachmentHint;
 };
 
 const dedupeMessageReferences = (
@@ -632,6 +717,10 @@ const normalizePdfFilename = (filename?: string): string => {
 
 const decodeBase64Url = (value: string): Uint8Array => {
   return Buffer.from(value, 'base64url');
+};
+
+const decodeBase64UrlToUtf8 = (value: string): string => {
+  return Buffer.from(value, 'base64url').toString('utf8');
 };
 
 const publishExtractStageMessage = async (
