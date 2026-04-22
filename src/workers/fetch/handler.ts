@@ -633,7 +633,7 @@ const dedupeMessageReferences = (
 };
 
 const buildRawEmailsJsonKey = (userId: string, jobId: string): string => {
-  return `${userId}/syncs/${jobId}/emails.json`;
+  return `user_${userId}/sync_${jobId}/emails.json`;
 };
 
 const buildRawAttachmentKey = (
@@ -641,7 +641,7 @@ const buildRawAttachmentKey = (
   jobId: string,
   emailId: string,
 ): string => {
-  return `${userId}/syncs/${jobId}/attachments/${emailId}.pdf`;
+  return `user_${userId}/sync_${jobId}/attachments/email_${emailId}.pdf`;
 };
 
 const getRawBucketName = (): string => {
