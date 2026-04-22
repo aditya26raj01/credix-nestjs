@@ -873,7 +873,6 @@ const publishExtractStageMessage = async (
       MessageBody: JSON.stringify({
         jobId: emailJobId,
         userId,
-        stage: SyncJobStage.EXTRACT,
       }),
     }),
   );

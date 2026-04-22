@@ -1,10 +1,6 @@
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { EmailJobEntity, EmailJobStatus } from 'src/sync/email-job.entity';
 import { DataSource } from 'typeorm';
-import {
-  SyncJobEntity,
-  SyncJobStage,
-  SyncJobStatus,
-} from '../../sync/sync-job.entity';
 
 interface SqsRecord {
   messageId: string;
@@ -18,7 +14,6 @@ interface SqsEvent {
 interface ExtractQueueMessage {
   jobId: string;
   userId: string;
-  stage: SyncJobStage;
 }
 
 const sqsClient = new SQSClient({
@@ -34,7 +29,7 @@ export const handler = async (event: SqsEvent): Promise<void> => {
     );
     const message = parseMessage(record.body);
     console.info(
-      `[extract-worker] parsed message jobId=${message.jobId} userId=${message.userId} stage=${message.stage}`,
+      `[extract-worker] parsed message jobId=${message.jobId} userId=${message.userId}`,
     );
 
     try {
@@ -60,7 +55,7 @@ const processExtractMessage = async (
   const ds = await getDataSource();
 
   await ds.transaction(async (manager) => {
-    const repo = manager.getRepository(SyncJobEntity);
+    const repo = manager.getRepository(EmailJobEntity);
 
     const job = await repo
       .createQueryBuilder('job')
@@ -69,23 +64,16 @@ const processExtractMessage = async (
       .getOne();
 
     if (!job) {
-      throw new Error(`SyncJob not found for jobId=${message.jobId}`);
+      throw new Error(`EmailJob not found for jobId=${message.jobId}`);
     }
 
     if (job.userId !== message.userId) {
-      throw new Error(`SyncJob user mismatch for jobId=${message.jobId}`);
-    }
-
-    if (job.stage !== SyncJobStage.EXTRACT) {
-      console.info(
-        `[extract-worker] skipping jobId=${message.jobId} because stage=${job.stage}`,
-      );
-      return;
+      throw new Error(`EmailJob user mismatch for jobId=${message.jobId}`);
     }
 
     if (
-      job.status === SyncJobStatus.SUCCESS ||
-      job.status === SyncJobStatus.FAILED
+      job.status === EmailJobStatus.SUCCESS ||
+      job.status === EmailJobStatus.FAILED
     ) {
       console.info(
         `[extract-worker] skipping jobId=${message.jobId} because status=${job.status}`,
@@ -93,13 +81,11 @@ const processExtractMessage = async (
       return;
     }
 
-    if (job.status === SyncJobStatus.PENDING) {
-      job.status = SyncJobStatus.RUNNING;
+    if (job.status === EmailJobStatus.PENDING) {
+      job.status = EmailJobStatus.RUNNING;
       job.errorMessage = null;
       await repo.save(job);
-      console.info(
-        `[extract-worker] marked RUNNING jobId=${message.jobId} stage=${job.stage}`,
-      );
+      console.info(`[extract-worker] marked RUNNING jobId=${message.jobId}`);
     }
   });
 
@@ -113,7 +99,7 @@ const processExtractMessage = async (
     );
 
     await ds.transaction(async (manager) => {
-      const repo = manager.getRepository(SyncJobEntity);
+      const repo = manager.getRepository(EmailJobEntity);
       const job = await repo
         .createQueryBuilder('job')
         .setLock('pessimistic_write')
@@ -122,24 +108,13 @@ const processExtractMessage = async (
 
       if (!job) {
         throw new Error(
-          `SyncJob missing before stage transition. jobId=${message.jobId}`,
+          `EmailJob missing before stage transition. jobId=${message.jobId}`,
         );
       }
 
-      if (job.stage !== SyncJobStage.EXTRACT) {
-        console.info(
-          `[extract-worker] skip stage transition for jobId=${message.jobId} because stage=${job.stage}`,
-        );
-        return;
-      }
-
-      job.stage = SyncJobStage.PROCESS;
-      job.status = SyncJobStatus.RUNNING;
-      job.lastProcessedAt = new Date();
+      job.status = EmailJobStatus.SUCCESS;
       await repo.save(job);
-      console.info(
-        `[extract-worker] advanced jobId=${message.jobId} to stage=${job.stage}`,
-      );
+      console.info(`[extract-worker] completed jobId=${message.jobId}`);
     });
 
     console.info(
@@ -176,7 +151,6 @@ const publishProcessStageMessage = async (
       MessageBody: JSON.stringify({
         jobId,
         userId,
-        stage: SyncJobStage.PROCESS,
       }),
     }),
   );
@@ -187,14 +161,14 @@ const publishProcessStageMessage = async (
 
 const markJobFailed = async (jobId: string, error: unknown): Promise<void> => {
   const ds = await getDataSource();
-  const repo = ds.getRepository(SyncJobEntity);
+  const repo = ds.getRepository(EmailJobEntity);
   const job = await repo.findOne({ where: { id: jobId } });
 
   if (!job) {
     return;
   }
 
-  job.status = SyncJobStatus.FAILED;
+  job.status = EmailJobStatus.FAILED;
   job.errorMessage = formatError(error);
   await repo.save(job);
   console.error(
@@ -205,20 +179,13 @@ const markJobFailed = async (jobId: string, error: unknown): Promise<void> => {
 const parseMessage = (rawBody: string): ExtractQueueMessage => {
   const parsed = JSON.parse(rawBody) as Partial<ExtractQueueMessage>;
 
-  if (!parsed.jobId || !parsed.userId || !parsed.stage) {
+  if (!parsed.jobId || !parsed.userId) {
     throw new Error('Invalid extract queue message payload.');
-  }
-
-  if (parsed.stage !== SyncJobStage.EXTRACT) {
-    throw new Error(
-      `Extract worker received unsupported stage=${parsed.stage}`,
-    );
   }
 
   return {
     jobId: parsed.jobId,
     userId: parsed.userId,
-    stage: parsed.stage,
   };
 };
 
@@ -236,7 +203,7 @@ const getDataSource = async (): Promise<DataSource> => {
   dataSource = new DataSource({
     type: 'postgres',
     url: getRequiredEnv('DATABASE_URL'),
-    entities: [SyncJobEntity],
+    entities: [EmailJobEntity],
     synchronize: false,
     ssl: dbSslEnabled ? { rejectUnauthorized: dbRejectUnauthorized } : false,
   });
