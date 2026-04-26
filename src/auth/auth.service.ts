@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Credentials, OAuth2Client, TokenPayload } from 'google-auth-library';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { AppConfigService } from '../config/app-config.service';
 import {
   OAuthConnectionEntity,
@@ -61,11 +61,13 @@ export class AuthService {
     }
 
     const payload = await this.verifyGoogleIdToken(tokens.id_token);
-    const user = await this.upsertGoogleUser(payload);
+    const authResult = await this.dataSource.transaction(async (manager) => {
+      const user = await this.upsertGoogleUser(payload, manager);
 
-    await this.upsertGoogleOAuthConnection(user, payload, tokens);
+      await this.upsertGoogleOAuthConnection(user, payload, tokens, manager);
 
-    const authResult = await this.issueAppSession(user, requestMeta);
+      return this.issueAppSession(user, requestMeta, manager);
+    });
 
     return {
       ...authResult,
@@ -82,9 +84,12 @@ export class AuthService {
 
   async signInWithGoogle(idToken: string, requestMeta?: RequestMeta) {
     const payload = await this.verifyGoogleIdToken(idToken);
-    const user = await this.upsertGoogleUser(payload);
 
-    return this.issueAppSession(user, requestMeta);
+    return this.dataSource.transaction(async (manager) => {
+      const user = await this.upsertGoogleUser(payload, manager);
+
+      return this.issueAppSession(user, requestMeta, manager);
+    });
   }
 
   async refreshTokens(refreshToken: string, requestMeta?: RequestMeta) {
@@ -158,12 +163,20 @@ export class AuthService {
     }
   }
 
-  private async issueAppSession(user: UserEntity, requestMeta?: RequestMeta) {
+  private async issueAppSession(
+    user: UserEntity,
+    requestMeta?: RequestMeta,
+    manager?: EntityManager,
+  ) {
     const { accessToken, refreshToken } = await this.issueTokenPair(
       user,
+      manager,
       requestMeta,
     );
-    const googleConnection = await this.oauthConnectionsRepository.findOne({
+    const oauthConnectionsRepository = manager
+      ? manager.getRepository(OAuthConnectionEntity)
+      : this.oauthConnectionsRepository;
+    const googleConnection = await oauthConnectionsRepository.findOne({
       where: {
         userId: user.id,
         provider: OAuthProvider.GOOGLE,
@@ -213,15 +226,21 @@ export class AuthService {
     }
   }
 
-  private async upsertGoogleUser(payload: TokenPayload) {
+  private async upsertGoogleUser(
+    payload: TokenPayload,
+    manager?: EntityManager,
+  ) {
     const email = payload.email!.toLowerCase().trim();
     const displayName = payload.name?.trim() || email.split('@')[0] || email;
     const avatarUrl = payload.picture?.trim() || '';
+    const usersRepository = manager
+      ? manager.getRepository(UserEntity)
+      : this.usersRepository;
 
-    let user = await this.usersRepository.findOne({ where: { email } });
+    let user = await usersRepository.findOne({ where: { email } });
 
     if (!user) {
-      user = this.usersRepository.create({
+      user = usersRepository.create({
         email,
         displayName,
         avatarUrl,
@@ -232,13 +251,14 @@ export class AuthService {
       user.avatarUrl = avatarUrl;
     }
 
-    return this.usersRepository.save(user);
+    return usersRepository.save(user);
   }
 
   private async upsertGoogleOAuthConnection(
     user: UserEntity,
     payload: TokenPayload,
     tokens: Credentials,
+    manager?: EntityManager,
   ) {
     if (!payload.sub || !payload.email) {
       throw new UnauthorizedException(
@@ -246,7 +266,10 @@ export class AuthService {
       );
     }
 
-    const existing = await this.oauthConnectionsRepository.findOne({
+    const oauthConnectionsRepository = manager
+      ? manager.getRepository(OAuthConnectionEntity)
+      : this.oauthConnectionsRepository;
+    const existing = await oauthConnectionsRepository.findOne({
       where: {
         userId: user.id,
         provider: OAuthProvider.GOOGLE,
@@ -265,7 +288,7 @@ export class AuthService {
 
     const connection =
       existing ||
-      this.oauthConnectionsRepository.create({
+      oauthConnectionsRepository.create({
         userId: user.id,
         provider: OAuthProvider.GOOGLE,
       });
@@ -284,7 +307,7 @@ export class AuthService {
     connection.tokenType = tokens.token_type || existing?.tokenType || null;
     connection.revokedAt = null;
 
-    return this.oauthConnectionsRepository.save(connection);
+    return oauthConnectionsRepository.save(connection);
   }
 
   private createGoogleOAuthClient() {
@@ -320,17 +343,21 @@ export class AuthService {
     ]);
   }
 
-  private async issueTokenPair(user: UserEntity, requestMeta?: RequestMeta) {
+  private async issueTokenPair(
+    user: UserEntity,
+    manager?: EntityManager,
+    requestMeta?: RequestMeta,
+  ) {
     return this.issueTokenPairWithManager(
       user,
-      this.dataSource.manager,
+      manager || this.dataSource.manager,
       requestMeta,
     );
   }
 
   private async issueTokenPairWithManager(
     user: UserEntity,
-    manager: DataSource['manager'],
+    manager: EntityManager,
     requestMeta?: RequestMeta,
   ) {
     const accessToken = await this.tokenService.signAccessToken({

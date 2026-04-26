@@ -26,10 +26,6 @@
     "commitlint": "commitlint --from=HEAD~1 --to=HEAD"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1033.0",
-    "@aws-sdk/client-sqs": "^3.1032.0",
-    "@langchain/core": "^1.1.40",
-    "@langchain/langgraph": "^1.2.9",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
@@ -39,8 +35,6 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "google-auth-library": "^10.6.2",
-    "p-limit": "^7.3.0",
-    "pg": "^8.20.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "typeorm": "^0.3.28"
